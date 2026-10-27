@@ -14,55 +14,107 @@ jobs:
     runs-on: self-hosted
 
     steps:
+      # Step 1: Checkout main branch
       - name: Checkout main
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           ref: main
 
+      # Step 2: Setup Java 21
       - name: Setup Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
+      # Step 3: Check Java version
       - name: Check Java Version
         run: |
           java -version
           javac -version
 
+      # Step 4: Build Spring Boot application
       - name: Build Application
         run: |
           chmod +x mvnw
           ./mvnw clean package -DskipTests
 
+      # Step 5: Verify generated JAR
+      - name: Verify JAR File
+        run: |
+          ls -lh target/*.jar
+
+      # Step 6: Stop old Spring Boot application
       - name: Stop Old Application
         run: |
-          if [ -f /home/ubuntu/spring-demo/app.pid ]; then
-            PID=$(cat /home/ubuntu/spring-demo/app.pid)
+          APP_DIR="/home/ubuntu/spring-demo"
+
+          if [ -f "$APP_DIR/app.pid" ]; then
+            PID=$(cat "$APP_DIR/app.pid")
 
             if kill -0 "$PID" 2>/dev/null; then
               kill "$PID"
-              sleep 2
+
+              for i in $(seq 1 10); do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+
+              if kill -0 "$PID" 2>/dev/null; then
+                kill -9 "$PID"
+              fi
             fi
 
-            rm -f /home/ubuntu/spring-demo/app.pid
+            rm -f "$APP_DIR/app.pid"
           fi
 
+      # Step 7: Copy new JAR
       - name: Copy New Application
         run: |
-          mkdir -p /home/ubuntu/spring-demo
-          cp target/app.jar /home/ubuntu/spring-demo/app.jar
+          APP_DIR="/home/ubuntu/spring-demo"
 
+          mkdir -p "$APP_DIR"
+
+          JAR_FILE=$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*.original' | head -n 1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: No application JAR found in target/"
+            exit 1
+          fi
+
+          cp "$JAR_FILE" "$APP_DIR/app.jar"
+
+          echo "Deployed JAR: $JAR_FILE"
+
+      # Step 8: Start Spring Boot on port 8081
       - name: Start Application
         run: |
-          cd /home/ubuntu/spring-demo
+          APP_DIR="/home/ubuntu/spring-demo"
 
-          RUNNER_TRACKING_ID="" nohup java -jar app.jar > app.log 2>&1 &
+          cd "$APP_DIR"
+
+          RUNNER_TRACKING_ID="" nohup java -jar app.jar --server.port=8081 > app.log 2>&1 &
 
           echo $! > app.pid
 
+      # Step 9: Verify deployment
       - name: Verify Deployment
         run: |
-          sleep 5
-          curl --fail http://localhost:8080/hello
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8081/hello; then
+              echo ""
+              echo "Deployment successful!"
+              exit 0
+            fi
+
+            echo "Waiting for Spring Boot to start... ($i/30)"
+            sleep 2
+          done
+
+          echo "ERROR: Spring Boot did not respond successfully."
+          echo "Application logs:"
+          cat /home/ubuntu/spring-demo/app.log
+          exit 1
